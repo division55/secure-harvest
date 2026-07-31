@@ -1,0 +1,191 @@
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+
+describe("PolicyContract", function () {
+  let policyContract;
+  let owner;
+  let farmer;
+  let other;
+
+  const ONE_DAY = 24 * 60 * 60;
+
+  beforeEach(async function () {
+    [owner, farmer, other] = await ethers.getSigners();
+
+    const PolicyContract = await ethers.getContractFactory("PolicyContract");
+    policyContract = await PolicyContract.deploy();
+    await policyContract.waitForDeployment();
+  });
+
+  async function currentTimestamp() {
+    const block = await ethers.provider.getBlock("latest");
+    return block.timestamp;
+  }
+
+  describe("createPolicy", function () {
+    it("creates a policy and stores the correct data", async function () {
+      const now = await currentTimestamp();
+      const seasonStart = now;
+      const seasonEnd = now + 30 * ONE_DAY;
+      const premium = ethers.parseEther("0.1");
+      const coverageAmount = ethers.parseEther("1.0");
+      const triggerThreshold = 50; // e.g. 50mm rainfall
+
+      await expect(
+        policyContract
+          .connect(farmer)
+          .createPolicy(coverageAmount, triggerThreshold, seasonStart, seasonEnd, {
+            value: premium,
+          })
+      )
+        .to.emit(policyContract, "PolicyCreated")
+        .withArgs(0, farmer.address, premium, coverageAmount, triggerThreshold, seasonStart, seasonEnd);
+
+      const policy = await policyContract.policies(0);
+      expect(policy.farmer).to.equal(farmer.address);
+      expect(policy.premiumPaid).to.equal(premium);
+      expect(policy.coverageAmount).to.equal(coverageAmount);
+      expect(policy.status).to.equal(0); // Active
+    });
+
+    it("reverts if no premium is sent", async function () {
+      const now = await currentTimestamp();
+      await expect(
+        policyContract
+          .connect(farmer)
+          .createPolicy(ethers.parseEther("1.0"), 50, now, now + ONE_DAY, { value: 0 })
+      ).to.be.revertedWith("PolicyContract: premium required");
+    });
+
+    it("reverts if season end is not after season start", async function () {
+      const now = await currentTimestamp();
+      await expect(
+        policyContract
+          .connect(farmer)
+          .createPolicy(ethers.parseEther("1.0"), 50, now, now, {
+            value: ethers.parseEther("0.1"),
+          })
+      ).to.be.revertedWith("PolicyContract: invalid season window");
+    });
+
+    it("increments policy ids for multiple policies", async function () {
+      const now = await currentTimestamp();
+      const args = [ethers.parseEther("1.0"), 50, now, now + ONE_DAY];
+
+      await policyContract.connect(farmer).createPolicy(...args, { value: ethers.parseEther("0.1") });
+      await policyContract.connect(other).createPolicy(...args, { value: ethers.parseEther("0.1") });
+
+      const first = await policyContract.policies(0);
+      const second = await policyContract.policies(1);
+      expect(first.farmer).to.equal(farmer.address);
+      expect(second.farmer).to.equal(other.address);
+    });
+  });
+
+  describe("recordTrigger", function () {
+    let policyId;
+    let seasonStart;
+    let seasonEnd;
+    const triggerThreshold = 50;
+
+    beforeEach(async function () {
+      const now = await currentTimestamp();
+      seasonStart = now;
+      seasonEnd = now + 30 * ONE_DAY;
+
+      await policyContract
+        .connect(farmer)
+        .createPolicy(ethers.parseEther("1.0"), triggerThreshold, seasonStart, seasonEnd, {
+          value: ethers.parseEther("0.1"),
+        });
+      policyId = 0;
+    });
+
+    it("allows the owner to record a valid trigger", async function () {
+      const observedValue = 30; // below threshold, so it should trigger
+      await expect(policyContract.connect(owner).recordTrigger(policyId, observedValue))
+        .to.emit(policyContract, "PolicyTriggered")
+        .withArgs(policyId, observedValue);
+
+      const policy = await policyContract.policies(policyId);
+      expect(policy.status).to.equal(1); // Triggered
+    });
+
+    it("reverts if called by a non-owner", async function () {
+      await expect(
+        policyContract.connect(farmer).recordTrigger(policyId, 30)
+      ).to.be.revertedWith("PolicyContract: caller is not the owner");
+    });
+
+    it("reverts if the observed value does not breach the threshold", async function () {
+      const observedValue = 80; // above threshold, should not trigger
+      await expect(
+        policyContract.connect(owner).recordTrigger(policyId, observedValue)
+      ).to.be.revertedWith("PolicyContract: threshold not breached");
+    });
+
+    it("reverts if the policy does not exist", async function () {
+      await expect(
+        policyContract.connect(owner).recordTrigger(999, 30)
+      ).to.be.revertedWith("PolicyContract: policy does not exist");
+    });
+  });
+
+  describe("executePayout", function () {
+    let policyId;
+    const coverageAmount = ethers.parseEther("1.0");
+
+    beforeEach(async function () {
+      const now = await currentTimestamp();
+
+      await policyContract
+        .connect(farmer)
+        .createPolicy(coverageAmount, 50, now, now + 30 * ONE_DAY, {
+          value: ethers.parseEther("0.1"),
+        });
+      policyId = 0;
+
+      // Fund the contract so it can cover payout beyond the small premium collected
+      await owner.sendTransaction({
+        to: await policyContract.getAddress(),
+        value: ethers.parseEther("2.0"),
+      });
+
+      await policyContract.connect(owner).recordTrigger(policyId, 30);
+    });
+
+    it("pays out the coverage amount to the farmer and updates status", async function () {
+      const farmerBalanceBefore = await ethers.provider.getBalance(farmer.address);
+
+      const tx = await policyContract.executePayout(policyId);
+      await expect(tx).to.emit(policyContract, "PolicyPaidOut").withArgs(policyId, coverageAmount);
+
+      const farmerBalanceAfter = await ethers.provider.getBalance(farmer.address);
+      expect(farmerBalanceAfter - farmerBalanceBefore).to.equal(coverageAmount);
+
+      const policy = await policyContract.policies(policyId);
+      expect(policy.status).to.equal(2); // PaidOut
+    });
+
+    it("reverts if the policy has not been triggered", async function () {
+      const now = await currentTimestamp();
+      await policyContract
+        .connect(farmer)
+        .createPolicy(coverageAmount, 50, now, now + 30 * ONE_DAY, {
+          value: ethers.parseEther("0.1"),
+        });
+      const untriggeredPolicyId = 1;
+
+      await expect(policyContract.executePayout(untriggeredPolicyId)).to.be.revertedWith(
+        "PolicyContract: policy not triggered"
+      );
+    });
+
+    it("reverts on a second payout attempt for the same policy", async function () {
+      await policyContract.executePayout(policyId);
+      await expect(policyContract.executePayout(policyId)).to.be.revertedWith(
+        "PolicyContract: policy not triggered"
+      );
+    });
+  });
+});
