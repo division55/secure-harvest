@@ -1,65 +1,74 @@
 const express = require('express');
+const { ethers } = require('ethers');
 const app = express();
 app.use(express.json());
 
-// 1. Mock Data Sources
-// In reality, these would be external API calls to NOAA, Satellite providers, etc.
-const fetchNOAAReading = async (plotId) => {
-    return { source: 'NOAA', value: 50 }; // Simulated rainfall in mm
-};
+// --- BLOCKCHAIN SETUP ---
+// Connect to local Hardhat node
+const provider = new ethers.JsonRpcProvider('http://127.0.0.1:8545');
 
-const fetchNDVIReading = async (plotId) => {
-    return { source: 'Satellite_NDVI', value: 45 }; // Simulated rainfall equivalent
-};
+// Hardhat's default Account #0 Private Key (DO NOT use in production)
+const privateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
+const wallet = new ethers.Wallet(privateKey, provider);
 
-// 2. Oracle Aggregator Endpoint
+// TODO: Replace with your actual deployed contract address from Hardhat
+const contractAddress = '0xYourDeployedContractAddressHere'; 
+
+// Minimal ABI just for the recordTrigger function
+const contractABI = [
+    "function recordTrigger(uint256 policyId) external"
+];
+
+const policyContract = new ethers.Contract(contractAddress, contractABI, wallet);
+
+// --- MOCK ORACLES ---
+const fetchNOAAReading = async (plotId) => ({ source: 'NOAA', value: 50 });
+const fetchNDVIReading = async (plotId) => ({ source: 'Satellite_NDVI', value: 45 });
+
+// --- AGGREGATOR ENDPOINT ---
 app.post('/api/oracle/evaluate', async (req, res) => {
     const { policyId, plotId, triggerThreshold } = req.body;
 
     try {
         const noaaData = await fetchNOAAReading(plotId);
         const ndviData = await fetchNDVIReading(plotId);
-
-        // 3. Tolerance Comparison Logic
-        const difference = Math.abs(noaaData.value - ndviData.value);
         
-        // Note: The exact tolerance threshold is currently an open question awaiting historical data calibration.
+        const difference = Math.abs(noaaData.value - ndviData.value);
         const TOLERANCE_THRESHOLD = 10; 
 
         if (difference > TOLERANCE_THRESHOLD) {
-            // If sources disagree beyond tolerance, do NOT auto-payout; flag for manual resolution.
             return res.json({
                 policyId,
                 status: 'FLAGGED_FOR_REVIEW',
-                reason: 'Data sources disagree beyond acceptable tolerance.',
-                readings: [noaaData, ndviData]
+                reason: 'Data sources disagree beyond acceptable tolerance.'
             });
         }
 
-        // 4. Trigger Evaluation
         const averageReading = (noaaData.value + ndviData.value) / 2;
         
         if (averageReading <= triggerThreshold) {
-            // This is where you will eventually use ethers.js to call the smart contract
-            // and replace the temporary manual testing behavior of recordTrigger().
+            // FIRE THE SMART CONTRACT TRANSACTION
+            console.log(`Triggering payout for Policy ${policyId}...`);
+            
+            // Calls the manual trigger function currently in your contract[cite: 1]
+            const tx = await policyContract.recordTrigger(policyId);
+            await tx.wait(); // Wait for confirmation
+
             return res.json({
                 policyId,
                 status: 'TRIGGER_CONDITIONS_MET',
                 averageReading,
-                message: 'Ready to submit cryptographic proof to smart contract.'
+                transactionHash: tx.hash
             });
         }
 
-        res.json({
-            policyId,
-            status: 'SAFE',
-            averageReading
-        });
+        res.json({ policyId, status: 'SAFE', averageReading });
 
     } catch (error) {
-        res.status(500).json({ error: 'Oracle fetch failed' });
+        console.error(error);
+        res.status(500).json({ error: 'Oracle fetch or transaction failed' });
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Semi-backend running on port ${PORT}`));
+const PORT = 3000;
+app.listen(PORT, () => console.log(`Backend bridging to Hardhat on port ${PORT}`));
