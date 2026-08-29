@@ -1,0 +1,14 @@
+{
+  "name": "secureharvest-contracts",
+  "version": "1.0.0",
+  "description": "Hardhat smart contracts for SecureHarvest protocol",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "compile": "hardhat compile"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.4"
+  }
+}

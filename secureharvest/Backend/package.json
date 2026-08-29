@@ -1,0 +1,15 @@
+{
+  "name": "secureharvest-backend",
+  "version": "1.0.0",
+  "description": "Multi-Source Oracle Aggregator and Dispute Engine Backend for SecureHarvest",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "test": "node test/oracle.test.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ethers": "^6.10.0"
+  }
+}
