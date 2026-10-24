@@ -70,12 +70,13 @@ async function fetchNOAAReading(plotId) {
     const apiUrl = `https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&daily=precipitation_sum&timezone=auto`;
     const responseData = await httpGetJson(apiUrl);
 
-    const dailySums = responseData?.daily?.precipitation_sum || [];
+    const dailySums = responseData?.daily?.precipitation_sum;
+    if (!Array.isArray(dailySums) || dailySums.length === 0) throw new Error('The provider returned no daily rainfall data.');
     const sevenDayTotal = dailySums.reduce((acc, curr) => acc + (curr || 0), 0);
     const roundedValue = Math.round(sevenDayTotal * 10) / 10;
 
     return {
-      source: 'NOAA_RAINFALL',
+      source: 'OPEN_METEO_RAINFALL',
       plotId,
       plotName: coords.name,
       coordinates: { latitude: coords.latitude, longitude: coords.longitude },
@@ -90,12 +91,12 @@ async function fetchNOAAReading(plotId) {
   } catch (error) {
     console.warn(`⚠️ Failed to fetch live Open-Meteo rainfall for ${plotId}, using baseline fallback:`, error.message);
     return {
-      source: 'NOAA_RAINFALL',
+      source: 'OPEN_METEO_RAINFALL',
       plotId,
-      value: 48.5,
+      value: null,
       timestamp,
       unit: 'mm',
-      mode: 'API_FALLBACK'
+      mode: 'UNAVAILABLE'
     };
   }
 }
@@ -124,35 +125,36 @@ async function fetchNDVIReading(plotId) {
     const apiUrl = `https://api.open-meteo.com/v1/forecast?latitude=${coords.latitude}&longitude=${coords.longitude}&current=soil_moisture_0_to_1cm,soil_moisture_1_to_3cm&timezone=auto`;
     const responseData = await httpGetJson(apiUrl);
 
-    const sm1 = responseData?.current?.soil_moisture_0_to_1cm || 0.20;
-    const sm2 = responseData?.current?.soil_moisture_1_to_3cm || 0.22;
+    const sm1 = responseData?.current?.soil_moisture_0_to_1cm;
+    const sm2 = responseData?.current?.soil_moisture_1_to_3cm;
+    if (!Number.isFinite(sm1) || !Number.isFinite(sm2)) throw new Error('The provider returned no soil moisture data.');
     const avgSoilMoisture = (sm1 + sm2) / 2;
 
     // Convert volumetric soil moisture (m³/m³, typically 0.05 to 0.50) to 100mm equivalent rainfall scale
     const mmEquivalent = Math.round((avgSoilMoisture / 0.45) * 100 * 10) / 10;
 
     return {
-      source: 'SATELLITE_NDVI',
+      source: 'OPEN_METEO_SOIL_MOISTURE',
       plotId,
       plotName: coords.name,
       coordinates: { latitude: coords.latitude, longitude: coords.longitude },
-      value: mmEquivalent,
+      value: Math.round(avgSoilMoisture * 1000) / 1000,
       rawVolumetricSoilMoisture: avgSoilMoisture,
       timestamp,
-      unit: 'mm_equivalent',
+      unit: 'm³/m³',
       mode: 'REAL_LIVE_API',
-      provider: 'Copernicus / Open-Meteo Satellite Feed'
+      provider: 'Open-Meteo soil moisture estimate'
     };
 
   } catch (error) {
     console.warn(`⚠️ Failed to fetch live Satellite Soil Moisture for ${plotId}, using baseline fallback:`, error.message);
     return {
-      source: 'SATELLITE_NDVI',
+      source: 'OPEN_METEO_SOIL_MOISTURE',
       plotId,
-      value: 45.0,
+      value: null,
       timestamp,
-      unit: 'mm_equivalent',
-      mode: 'API_FALLBACK'
+      unit: 'm³/m³',
+      mode: 'UNAVAILABLE'
     };
   }
 }
@@ -160,7 +162,20 @@ async function fetchNDVIReading(plotId) {
 /**
  * Pull from all configured oracle data feeds for a given plot in parallel.
  */
-async function fetchMultiSourceReadings(plotId) {
+async function fetchMultiSourceReadings(plotId, location) {
+  if (location) {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+    const result = await httpGetJson(url);
+    const match = result?.results?.[0];
+    if (!match) throw new Error(`Could not locate “${location}”. Check the plot's district, state and country.`);
+    PLOT_COORDINATES[plotId] = {
+      latitude: match.latitude,
+      longitude: match.longitude,
+      name: [match.name, match.admin1, match.country].filter(Boolean).join(', ')
+    };
+  } else if (!PLOT_COORDINATES[plotId]) {
+    throw new Error('A saved plot location is required for live oracle readings.');
+  }
   const [noaaData, ndviData] = await Promise.all([
     fetchNOAAReading(plotId),
     fetchNDVIReading(plotId)

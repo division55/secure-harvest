@@ -17,14 +17,15 @@ const activeDisputes = new Map();
  * @returns {object} Consensus evaluation result
  */
 function evaluateReadings(readings, triggerThreshold, toleranceThreshold = DEFAULT_TOLERANCE_THRESHOLD) {
-  if (!readings || readings.length < 2) {
+  const rainfallReadings = (readings || []).filter((reading) => reading.unit === 'mm');
+  if (rainfallReadings.length < 1) {
     return {
       status: 'INSUFFICIENT_DATA',
-      reason: 'At least two independent oracle readings are required for consensus verification.'
+      reason: 'No usable rainfall reading was returned, so the policy threshold could not be evaluated.'
     };
   }
 
-  const values = readings.map(r => r.value);
+  const values = rainfallReadings.map(r => r.value);
   const minVal = Math.min(...values);
   const maxVal = Math.max(...values);
   const difference = maxVal - minVal;
@@ -33,14 +34,14 @@ function evaluateReadings(readings, triggerThreshold, toleranceThreshold = DEFAU
   const averageReading = Math.round((sum / values.length) * 100) / 100;
 
   // 1. Check multi-source consensus tolerance
-  if (difference > toleranceThreshold) {
+  if (rainfallReadings.length > 1 && difference > toleranceThreshold) {
     return {
       status: 'DISPUTE_FLAGGED',
       difference,
       toleranceThreshold,
       averageReading,
       readings,
-      reason: `Data sources disagree beyond tolerance threshold (${difference}mm > ${toleranceThreshold}mm). Auto-payout halted.`
+      reason: `Rainfall sources disagree beyond tolerance threshold (${difference}mm > ${toleranceThreshold}mm). Auto-payout halted.`
     };
   }
 
@@ -53,7 +54,7 @@ function evaluateReadings(readings, triggerThreshold, toleranceThreshold = DEFAU
       averageReading,
       triggerThreshold,
       readings,
-      reason: `Consensus verified (${averageReading}mm <= threshold ${triggerThreshold}mm). Trigger condition met.`
+      reason: `${rainfallReadings.length > 1 ? 'Rainfall sources agree' : 'Single rainfall source available'} (${averageReading}mm <= threshold ${triggerThreshold}mm). Trigger condition met.`
     };
   }
 
@@ -65,7 +66,7 @@ function evaluateReadings(readings, triggerThreshold, toleranceThreshold = DEFAU
     averageReading,
     triggerThreshold,
     readings,
-    reason: `Consensus verified (${averageReading}mm > threshold ${triggerThreshold}mm). Crop conditions normal.`
+    reason: `${rainfallReadings.length > 1 ? 'Rainfall sources agree' : 'Single rainfall source available'} (${averageReading}mm > threshold ${triggerThreshold}mm). Trigger condition not met.`
   };
 }
 
